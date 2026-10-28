@@ -85,9 +85,30 @@ async function elegirPortalSnd(page) {
 
 const fueraDelLogin = (url) => !url.href.includes("login.napsis.com")
 
+/**
+ * Qué se está viendo en vez del formulario. Sin esto, un bloqueo de Napsis
+ * (muro antibots, geobloqueo, caída) llega como un "Timeout" indescifrable.
+ */
+async function describirPagina(page) {
+  const [url, titulo, texto] = await Promise.all([
+    Promise.resolve(page.url()),
+    page.title().catch(() => ""),
+    page.locator("body").innerText({ timeout: 2000 }).catch(() => ""),
+  ])
+  const resumen = texto.replace(/\s+/g, " ").trim().slice(0, 180)
+  return `No apareció el formulario de Napsis. Se cargó "${titulo}" (${url})${resumen ? `: ${resumen}` : " sin contenido"}`
+}
+
 async function login(page, rut, password) {
-  await page.goto(LOGIN_URL, { waitUntil: "networkidle" })
-  await page.getByRole("textbox", { name: "Usuario" }).fill(rutSinDv(rut))
+  await page.goto(LOGIN_URL, { waitUntil: "networkidle" }).catch(() => {})
+
+  const usuario = page.getByRole("textbox", { name: "Usuario" })
+  try {
+    await usuario.waitFor({ state: "visible", timeout: 20000 })
+  } catch {
+    throw new NapsisError(await describirPagina(page), "login")
+  }
+  await usuario.fill(rutSinDv(rut))
   await page.getByRole("button", { name: "Siguiente" }).click()
 
   const passwordField = page.locator(
