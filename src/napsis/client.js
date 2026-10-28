@@ -145,7 +145,12 @@ class NapsisClient {
    * @param {{rut: string, password: string, colegio: string, headless?: boolean}} opts
    */
   static async open({ rut, password, colegio, headless = true }) {
-    const browser = await chromium.launch({ headless, args: ["--no-sandbox", "--disable-setuid-sandbox"] })
+    // --disable-dev-shm-usage: en contenedores /dev/shm son 64 MB y Chromium se cae
+    // con "Target closed" al imprimir; así usa /tmp en su lugar.
+    const browser = await chromium.launch({
+      headless,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    })
     try {
       const context = await browser.newContext({ locale: "es-CL" })
       const page = await context.newPage()

@@ -92,8 +92,15 @@ test("SessionStore aísla usuarios y expira por inactividad", async () => {
 
 // ── HTTP ──────────────────────────────────────────────────────────
 
+/** Identidad de mentira: cada token pertenece a un usuario, el resto se rechaza. */
+const identify = async (token) => {
+  const owners = { tok: "profe@colegio.cl", "tok-otro": "otro@x.cl" }
+  if (owners[token]) return owners[token]
+  throw Object.assign(new Error("Tu sesión de Google expiró."), { name: "GoogleAuthError" })
+}
+
 async function withServer(deps, fn) {
-  const app = createApp({ apiKey: "k", defaultColegio: "rayencaven", heartbeatMs: 50, ...deps })
+  const app = createApp({ apiKey: "k", defaultColegio: "rayencaven", heartbeatMs: 50, identify, ...deps })
   const server = await new Promise((r) => { const s = app.listen(0, () => r(s)) })
   const base = `http://127.0.0.1:${server.address().port}`
   try {
@@ -104,7 +111,7 @@ async function withServer(deps, fn) {
   }
 }
 
-const headers = { "content-type": "application/json", "x-api-key": "k", "x-user-email": "Profe@Colegio.cl" }
+const headers = { "content-type": "application/json", "x-api-key": "k", "x-google-token": "tok" }
 
 test("API: rechaza sin API key y valida credenciales", async () => {
   const sessions = new SessionStore({ openClient: async () => ({ close: async () => {} }) })
@@ -114,6 +121,17 @@ test("API: rechaza sin API key y valida credenciales", async () => {
     const r2 = await fetch(`${base}/api/sessions`, { method: "POST", headers, body: "{}" })
     assert.equal(r2.status, 400)
     assert.equal((await r2.json()).error, "Credenciales requeridas")
+
+    // Con la API key pero sin token de Google no se pasa: la identidad no se declara.
+    const sinToken = { "content-type": "application/json", "x-api-key": "k" }
+    const r3 = await fetch(`${base}/api/sessions`, { method: "POST", headers: sinToken, body: "{}" })
+    assert.equal(r3.status, 400)
+
+    const r4 = await fetch(`${base}/api/sessions`, {
+      method: "POST", headers: { ...sinToken, "x-google-token": "inventado" }, body: "{}",
+    })
+    assert.equal(r4.status, 401)
+    assert.equal((await r4.json()).code, "google_auth")
   })
 })
 
@@ -139,13 +157,13 @@ test("API: flujo sesión → roster → job → SSE", async () => {
     assert.equal(roster.students.length, 1)
 
     const other = await fetch(`${base}/api/sessions/${s.sessionId}/roster`, {
-      method: "POST", headers: { ...headers, "x-user-email": "otro@x.cl" }, body: JSON.stringify({ tipoEns: "110", grado: "3", curso: "A" }),
+      method: "POST", headers: { ...headers, "x-google-token": "tok-otro" }, body: JSON.stringify({ tipoEns: "110", grado: "3", curso: "A" }),
     })
     assert.equal(other.status, 410)
 
     const start = await fetch(`${base}/api/jobs`, {
       method: "POST", headers, body: JSON.stringify({
-        sessionId: s.sessionId, students: [mk(1)], googleAccessToken: "tok", ...baseArgs,
+        sessionId: s.sessionId, students: [mk(1)], ...baseArgs,
         napsisConfig: { tipoEns: "110", grado: "3", curso: "A", periodo: "1", religion: "2" },
       }),
     })

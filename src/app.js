@@ -3,6 +3,7 @@ const { timingSafeEqual } = require("node:crypto")
 const { SessionError } = require("./sessions")
 const { runJob } = require("./jobs")
 const { createDraft } = require("./gmail")
+const { createIdentifier } = require("./google-identity")
 
 const MAX_STUDENTS = 200
 
@@ -19,9 +20,19 @@ function isNonEmptyString(v) {
 /**
  * @param {{apiKey: string, sessions: import("./sessions").SessionStore,
  *          jobs: import("./jobs").JobStore, defaultColegio: string,
- *          maxConcurrentJobs?: number, draftFn?: typeof createDraft, heartbeatMs?: number}} deps
+ *          maxConcurrentJobs?: number, draftFn?: typeof createDraft, heartbeatMs?: number,
+ *          identify?: (token: string) => Promise<string>}} deps
  */
-function createApp({ apiKey, sessions, jobs, defaultColegio, maxConcurrentJobs = 2, draftFn = createDraft, heartbeatMs = 20000 }) {
+function createApp({
+  apiKey,
+  sessions,
+  jobs,
+  defaultColegio,
+  maxConcurrentJobs = 2,
+  draftFn = createDraft,
+  heartbeatMs = 20000,
+  identify = createIdentifier(),
+}) {
   if (!apiKey) throw new Error("API_KEY es obligatoria")
 
   const app = express()
@@ -30,13 +41,21 @@ function createApp({ apiKey, sessions, jobs, defaultColegio, maxConcurrentJobs =
 
   app.get("/health", (_req, res) => res.json({ ok: true }))
 
-  // Autenticación de servicio + identidad del usuario (la pone el servidor Next.js tras validar la sesión de Google)
-  app.use("/api", (req, res, next) => {
+  // Dos cosas distintas: la API key prueba que la llamada viene de nuestro front,
+  // y el token de Google prueba QUIÉN es el usuario. La identidad no puede venir
+  // en una cabecera suelta: con la API key filtrada, cualquiera se haría pasar por
+  // otro y vería o cancelaría sus procesos.
+  app.use("/api", async (req, res, next) => {
     if (!safeEqual(req.headers["x-api-key"], apiKey)) return res.status(401).json({ error: "API key inválida" })
-    const owner = String(req.headers["x-user-email"] || "").trim().toLowerCase()
-    if (!owner) return res.status(400).json({ error: "Falta la identidad del usuario" })
-    req.owner = owner
-    next()
+    const token = String(req.headers["x-google-token"] || "").trim()
+    if (!token) return res.status(400).json({ error: "Falta la identidad del usuario" })
+    try {
+      req.owner = await identify(token)
+      req.googleToken = token
+      next()
+    } catch (err) {
+      next(err)
+    }
   })
 
   // ── Sesiones de Napsis ─────────────────────────────────────────────
@@ -84,9 +103,9 @@ function createApp({ apiKey, sessions, jobs, defaultColegio, maxConcurrentJobs =
   // ── Jobs ───────────────────────────────────────────────────────────
 
   app.post("/api/jobs", async (req, res) => {
-    const { sessionId, students, asunto, cuerpo, napsisConfig, googleAccessToken } = req.body || {}
+    const { sessionId, students, asunto, cuerpo, napsisConfig } = req.body || {}
     const cfgOk = napsisConfig && ["tipoEns", "grado", "curso", "periodo", "religion"].every((k) => isNonEmptyString(napsisConfig[k]))
-    if (!Array.isArray(students) || !students.length || !isNonEmptyString(asunto) || !isNonEmptyString(cuerpo) || !cfgOk || !isNonEmptyString(googleAccessToken)) {
+    if (!Array.isArray(students) || !students.length || !isNonEmptyString(asunto) || !isNonEmptyString(cuerpo) || !cfgOk) {
       return res.status(400).json({ error: "Datos incompletos" })
     }
     if (students.length > MAX_STUDENTS) return res.status(400).json({ error: `Máximo ${MAX_STUDENTS} alumnos por proceso` })
@@ -108,7 +127,7 @@ function createApp({ apiKey, sessions, jobs, defaultColegio, maxConcurrentJobs =
       store: jobs,
       job,
       client: s.client,
-      createDraft: (raw) => draftFn(googleAccessToken, raw),
+      createDraft: (raw) => draftFn(req.googleToken, raw),
       students,
       asunto,
       cuerpo,
@@ -160,6 +179,7 @@ function createApp({ apiKey, sessions, jobs, defaultColegio, maxConcurrentJobs =
   // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => {
     if (err instanceof SessionError) return res.status(err.status).json({ error: err.message })
+    if (err && err.name === "GoogleAuthError") return res.status(401).json({ error: err.message, code: "google_auth" })
     if (err && err.name === "NapsisError") {
       return res.status(err.kind === "login" ? 401 : 502).json({ error: err.message, kind: err.kind })
     }
