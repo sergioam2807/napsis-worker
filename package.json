@@ -1,0 +1,21 @@
+{
+  "name": "napsis-worker",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Worker de Napsis: inicia sesión con Playwright, imprime informes a PDF y crea borradores en Gmail",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test-login": "node scripts/test-login.js"
+  },
+  "dependencies": {
+    "dotenv": "18.0.5",
+    "express": "5.2.1",
+    "playwright": "1.63.0"
+  }
+}
